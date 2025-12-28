@@ -1,0 +1,14 @@
+// Project-local debug tasks
+//
+// For more documentation on how to configure debug tasks,
+// see: https://zed.dev/docs/debugger
+[
+  {
+    "label": "Debug Program",
+    "request": "launch",
+    "name": "Launch Program",
+    "adapter": "CodeLLDB",
+    "program": "tinyaudio",
+    "args": ["https://synthwave-rex.radioca.st/stream/1/"],
+  },
+]
