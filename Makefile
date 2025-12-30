@@ -1,6 +1,12 @@
+FLAGS = -O2 -s
+
 all:
-	-mkdir build 2>/dev/null
-	cc -Wall -g -o build/tinyaudio src/main.c $(shell pkg-config --libs --cflags libavcodec libswresample libavutil libavformat libpulse libpulse-simple dbus-1)
+	@mkdir -p build
+	cc -Wall ${FLAGS} -o build/tinyaudio src/main.c $(shell pkg-config --libs --cflags libavcodec libswresample libavutil libavformat libpulse libpulse-simple dbus-1)
+
+debug: FLAGS:=-g
+debug: all
+
 clean:
 	-rm -r build
 

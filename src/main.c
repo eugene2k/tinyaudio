@@ -1,4 +1,4 @@
-#include "dbus/dbus-shared.h"
+#include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "dbus/dbus-shared.h"
 #include <dbus/dbus-protocol.h>
 #include <dbus/dbus.h>
 
@@ -232,7 +233,19 @@ dbus_bool_t add_dict_entry(DBusMessageIter *iter, const char *key, int type, con
     }
     return FALSE;
 }
-
+dbus_bool_t get_relevant_args(DBusMessage *msg, const char *const *interface, const char *const *property) {
+    DBusMessageIter iter;
+    dbus_message_iter_init(msg, &iter);
+    if (!(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING)) {
+        return FALSE;
+    }
+    dbus_message_iter_get_basic(&iter, &interface);
+    if (!(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING)) {
+        return FALSE;
+    }
+    dbus_message_iter_get_basic(&iter, &property);
+    return TRUE;
+}
 void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpegparams_t *ffmpegparams) {
     DBusMessage *reply = NULL;
     if (dbus_message_is_method_call(msg, IFACE_PLAYER, "OpenUri")) {
@@ -295,20 +308,14 @@ void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpegparams_t *ffmp
         status = QUITTING;
         reply = dbus_message_new_method_return(msg);
     } else if (dbus_message_is_method_call(msg, DBUS_INTERFACE_PROPERTIES, "Get")) {
-        DBusError error;
-        char *interface, *property;
-        dbus_error_init(&error);
-        if (!dbus_message_get_args(msg, &error, DBUS_TYPE_STRING, &interface, DBUS_TYPE_STRING, &property,
-                                   DBUS_TYPE_INVALID)) {
-            fprintf(stderr, "Error handling properties: %s\n", error.message);
-        }
-        dbus_error_free(&error);
-        if (!interface || !property) {
+        const char *interface = NULL, *property = NULL;
+        if (!get_relevant_args(msg, &interface, &property)) {
             reply = dbus_message_new_error(msg, "org.mpris.MediaPlayer2.tinyaudio.Error",
                                            "Expected interface and property arguments");
         } else {
             reply = dbus_message_new_method_return(msg);
         }
+
         if (strcmp(interface, IFACE_ROOT) == 0) {
             if (strcmp(property, "CanQuit") == 0) {
                 dbus_bool_t val = 0;
@@ -462,31 +469,27 @@ void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpegparams_t *ffmp
             reply = dbus_message_new_error(msg, "org.freedesktop.Properties.Get.Error", "No such interface");
         }
     } else if (dbus_message_is_method_call(msg, DBUS_INTERFACE_PROPERTIES, "Set")) {
-        char *interface = NULL, *property = NULL;
-        DBusMessageIter iter;
-        dbus_message_iter_init(msg, &iter);
-        if (dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING) {
-            dbus_message_iter_get_basic(&iter, interface);
-            if (dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING) {
-                dbus_message_iter_get_basic(&iter, property);
-                if (strcmp(interface, IFACE_PLAYER) == 0) {
-                    if (strcmp(property, "LoopStatus") == 0) {
-                        reply = dbus_message_new_method_return(msg);
-                    } else if (strcmp(property, "Rate") == 0) {
-                        reply = dbus_message_new_method_return(msg);
-                    } else if (strcmp(property, "Shuffle") == 0) {
-                        reply = dbus_message_new_method_return(msg);
-                    } else if (strcmp(property, "Volume") == 0) {
-                        reply = dbus_message_new_method_return(msg);
-                    } else {
-                        reply = dbus_message_new_error(msg, "org.freedesktop.DBus.Properties.Set.Error",
-                                                       "No such property");
-                    }
-                } else {
-                    reply =
-                        dbus_message_new_error(msg, "org.freedesktop.DBus.Properties.Set.Error", "No such interface");
-                }
+        const char *interface, *property;
+        if (!get_relevant_args(msg, &interface, &property)) {
+            reply = dbus_message_new_error(msg, "org.mpris.MediaPlayer2.tinyaudio.Error",
+                                           "Expected interface and property arguments");
+        } else {
+            reply = dbus_message_new_method_return(msg);
+        }
+        if (strcmp(interface, IFACE_PLAYER) == 0) {
+            if (strcmp(property, "LoopStatus") == 0) {
+                reply = dbus_message_new_method_return(msg);
+            } else if (strcmp(property, "Rate") == 0) {
+                reply = dbus_message_new_method_return(msg);
+            } else if (strcmp(property, "Shuffle") == 0) {
+                reply = dbus_message_new_method_return(msg);
+            } else if (strcmp(property, "Volume") == 0) {
+                reply = dbus_message_new_method_return(msg);
+            } else {
+                reply = dbus_message_new_error(msg, "org.freedesktop.DBus.Properties.Set.Error", "No such property");
             }
+        } else {
+            reply = dbus_message_new_error(msg, "org.freedesktop.DBus.Properties.Set.Error", "No such interface");
         }
     } else if (dbus_message_is_method_call(msg, DBUS_INTERFACE_INTROSPECTABLE, "Introspect")) {
         reply = dbus_message_new_method_return(msg);
@@ -560,10 +563,10 @@ int main(int argc, char **argv) {
 
         __pid_t pid = fork();
         switch (pid) {
-            case -1:
+            case -1:;
                 fprintf(stderr, "Failed to fork\n");
                 return 1;
-            case 0:
+            case 0:;
                 audio_t *audio = initaudio();
                 if (audio == NULL)
                     return 1;
@@ -617,6 +620,7 @@ int main(int argc, char **argv) {
                         status = STOPPED;
                     } else {
                         fprintf(stderr, "Unexpected stream error!");
+                        status = STOPPED;
                     }
                     av_packet_unref(pkt);
                 }

@@ -5,10 +5,9 @@
 [
   {
     "label": "Debug Program",
-    "request": "launch",
-    "name": "Launch Program",
+    "request": "attach",
+    "name": "Attach to Program",
     "adapter": "CodeLLDB",
-    "program": "tinyaudio",
-    "args": ["https://synthwave-rex.radioca.st/stream/1/"],
+    "pid": "$ZED_PICK_PID"
   },
 ]
