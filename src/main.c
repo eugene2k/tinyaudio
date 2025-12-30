@@ -505,14 +505,14 @@ void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpegparams_t *ffmp
     }
 }
 
-static void dbus_fatal(DBusError *err, const char *msg) {
-    if (dbus_error_is_set(err)) {
-        fprintf(stderr, "%s: %s\n", msg, err->message);
-        dbus_error_free(err);
+dbus_bool_t handle_dbus_error(DBusError *e, const char *msg) {
+    if (dbus_error_is_set(e)) {
+        fprintf(stderr, "%s: %s\n", msg, e->message);
+        dbus_error_free(e);
+        return TRUE;
     } else {
-        fprintf(stderr, "%s\n", msg);
+        return FALSE;
     }
-    exit(1);
 }
 
 int main(int argc, char **argv) {
@@ -526,39 +526,51 @@ int main(int argc, char **argv) {
     dbus_error_init(&err);
 
     DBusConnection *dbus_conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
-    if (!dbus_conn)
-        dbus_fatal(&err, "Failed to connect to session bus");
+    if (!dbus_conn) {
+        const char *msg = "Failed to connect to session bus";
+        if (!handle_dbus_error(&err, msg)) {
+            fprintf(stderr, "%s\n", msg);
+        }
+        return 1;
+    }
 
     int has_owner = dbus_bus_name_has_owner(dbus_conn, BUS_NAME, &err);
-    if (dbus_error_is_set(&err))
-        dbus_fatal(&err, "NameHasOwner failed");
+    if (handle_dbus_error(&err, "NameHasOwner failed")) {
+        return 1;
+    }
 
     if (has_owner) {
         /* Call OpenUri on the existing owner and exit */
         DBusMessage *msg = dbus_message_new_method_call(BUS_NAME, OBJ_PATH, IFACE_PLAYER, "OpenUri");
         if (!msg) {
             fprintf(stderr, "Failed to create DBus message\n");
-            exit(1);
+            return 1;
         }
         DBusMessageIter it;
         dbus_message_iter_init_append(msg, &it);
         const char *s = uri;
         if (!dbus_message_iter_append_basic(&it, DBUS_TYPE_STRING, &s)) {
             fprintf(stderr, "Failed to append argument\n");
-            exit(1);
+            return 1;
         }
         DBusMessage *reply = dbus_connection_send_with_reply_and_block(dbus_conn, msg, -1, &err);
         dbus_message_unref(msg);
-        if (!reply)
-            dbus_fatal(&err, "OpenUri call failed");
+        if (!reply) {
+            const char *msg = "OpenUri failed";
+            if (handle_dbus_error(&err, msg)) {
+                fprintf(stderr, "%s\n", msg);
+            }
+            return 1;
+        }
         dbus_message_unref(reply);
     } else {
         int ret = dbus_bus_request_name(dbus_conn, BUS_NAME, DBUS_NAME_FLAG_DO_NOT_QUEUE, &err);
-        if (dbus_error_is_set(&err))
-            dbus_fatal(&err, "RequestName failed");
+        if (handle_dbus_error(&err, "RequestName failed")) {
+            return 1;
+        }
         if (ret != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
             fprintf(stderr, "Could not become primary owner\n");
-            exit(1);
+            return 1;
         }
 
         __pid_t pid = fork();
