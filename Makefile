@@ -11,4 +11,4 @@ clean:
 	-rm -r build
 
 install:
-	install -D -s build/tinyaudio /usr/bin/tinyaudio
+	install -D -s build/tinyaudio ${DESTDIR}/usr/bin/tinyaudio
