@@ -25,87 +25,53 @@
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "dbus/dbus-shared.h"
-#include <dbus/dbus-protocol.h>
-#include <dbus/dbus.h>
-
-#include <libavcodec/avcodec.h>
-#include <libavcodec/codec_desc.h>
-#include <libavformat/avformat.h>
-#include <libavformat/avio.h>
-#include <libavutil/channel_layout.h>
-#include <libavutil/error.h>
-#include <libavutil/mathematics.h>
-#include <libavutil/opt.h>
-#include <libavutil/rational.h>
-#include <libavutil/samplefmt.h>
-#include <libswresample/swresample.h>
-
-#include <pulse/simple.h>
+#include <dbus/dbus-shared.h>
 
 #define BUS_NAME "org.mpris.MediaPlayer2.tinyaudio"
 #define IFACE_ROOT "org.mpris.MediaPlayer2"
 #define IFACE_PLAYER "org.mpris.MediaPlayer2.Player"
 #define OBJ_PATH "/org/mpris/MediaPlayer2"
-
-#define SAMPLE_RATE 44100
-#define CHANNELS 2
-
 #define XML_DATA                                                                                                       \
-    "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\"\
-         \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">\
-        <node name=\"/com/example/sample_object0\">\
-          <interface name=\"com.example.SampleInterface0\">\
-            <method name=\"Frobate\">\
-              <arg name=\"foo\" type=\"i\" direction=\"in\"/>\
-              <arg name=\"bar\" type=\"s\" direction=\"out\"/>\
-              <arg name=\"baz\" type=\"a{us}\" direction=\"out\"/>\
-              <annotation name=\"org.freedesktop.DBus.Deprecated\" value=\"true\"/>\
-            </method>\
-            <method name=\"Bazify\">\
-              <arg name=\"bar\" type=\"(iiu)\" direction=\"in\"/>\
-              <arg name=\"bar\" type=\"v\" direction=\"out\"/>\
-            </method>\
-            <method name=\"Mogrify\">\
-              <arg name=\"bar\" type=\"(iiav)\" direction=\"in\"/>\
-            </method>\
-            <signal name=\"Changed\">\
-              <arg name=\"new_value\" type=\"b\"/>\
-            </signal>\
-            <property name=\"Bar\" type=\"y\" access=\"readwrite\"/>\
-          </interface>\
-          <node name=\"child_of_sample_object\"/>\
-          <node name=\"another_child_of_sample_object\"/>\
-       </node>"
+    "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\" "                                \
+    "\"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\"><node "                                          \
+    "name=\"/org/mpris/MediaPlayer2\"><interface name=\"org.mpris.MediaPlayer2\"><method "                             \
+    "name=\"Raise\"/><method name=\"Quit\"/><property name=\"CanQuit\" type=\"b\" access=\"read\"/><property "         \
+    "name=\"CanRaise\" type=\"b\" access=\"read\"/><property name=\"HasTrackList\" type=\"b\" "                        \
+    "access=\"read\"/><property name=\"Identity\" type=\"s\" access=\"read\"/><property "                              \
+    "name=\"SupportedUriSchemes\" type=\"as\" access=\"read\"/><property name=\"SupportedMimeTypes\" "                 \
+    "type=\"as\" access=\"read\"/><property name=\"CanSetFullscreen\" type=\"b\" access=\"read\"/><property "          \
+    "name=\"Fullscreen\" type=\"b\" access=\"read\"/></interface><interface "                                          \
+    "name=\"org.mpris.MediaPlayer2.Player\"><method name=\"Play\"/><method name=\"Pause\"/><method "                   \
+    "name=\"Stop\"/><method name=\"PlayPause\"/><method name=\"Next\"/><method name=\"Previous\"/><method "            \
+    "name=\"Seek\"><arg name=\"offset\" type=\"x\" direction=\"in\"/></method><method "                                \
+    "name=\"SetPosition\"><arg name=\"track_id\" type=\"x\" direction=\"in\"/><arg name=\"position\" "                 \
+    "type=\"Seeked\" direction=\"in\"/></method><method name=\"OpenUri\"><arg name=\"uri\" type=\"Rate\" "             \
+    "direction=\"in\"/></method><property name=\"PlaybackStatus\" type=\"s\" access=\"read\"/><property "              \
+    "name=\"Rate\" type=\"d\" access=\"readwrite\"/><property name=\"Shuffle\" type=\"b\" "                            \
+    "access=\"readwrite\"/><property name=\"LoopStatus\" type=\"s\" access=\"readwrite\"/><property "                  \
+    "name=\"Position\" type=\"x\" access=\"readwrite\"/><property name=\"MinimumRate\" type=\"d\" "                    \
+    "access=\"read\"/><property name=\"MaximumRate\" type=\"d\" access=\"read\"/><property name=\"CanGoNext\" "        \
+    "type=\"b\" access=\"read\"/><property name=\"CanGoPrevious\" type=\"b\" access=\"read\"/><property "              \
+    "name=\"CanPlay\" type=\"b\" access=\"read\"/><property name=\"CanPause\" type=\"b\" "                             \
+    "access=\"read\"/><property name=\"CanSeek\" type=\"b\" access=\"read\"/><property name=\"CanControl\" "           \
+    "type=\"b\" access=\"read\"/><signal name=\"Seeked\"><arg name=\"Position\" "                                      \
+    "type=\"x\"/></signal></interface><interface name=\"org.freedesktop.DBus.Properties\"><method "                    \
+    "name=\"Get\"/><method name=\"Set\"/><method name=\"GetAll\"/></interface><interface "                             \
+    "name=\"org.freedesktop.DBus.Introspectable\"><method name=\"Introspect\"/></interface></node>";
 
-typedef struct {
-    AVFormatContext *fmt;
-    int astream;
-    AVCodecContext *cc;
-    SwrContext *swr;
-} ffmpegparams_t;
-
-enum status_t { PLAYING, PAUSED, STOPPED, QUITTING };
-
-enum status_t status = STOPPED;
-char *uri = NULL;
-int64_t position = 0;
-ffmpegparams_t ffmpegparams;
-
-typedef pa_simple audio_t;
-
-const char *tag2xesim(const char *tagname) {
+const char *tag2xesam(const char *tagname) {
     static const char *tagmap[][2] = {
-        {"album", "xesim:album"},       {"album_artist", "xesim:albumArtist"},
-        {"artist", "xesim:artist"},     {"comment", "xesim:comment"},
-        {"composer", "xesim:composer"}, {"date", "xesim:contentCreated"},
-        {"disc", "xesim:discNumber"},   {"genre", "xesim:genre"},
-        {"title", "xesim:title"},       {"track", "xesim:trackNumber"},
-        {"url", "xesim:url"},
+        {"album", "xesam:album"},       {"album_artist", "xesam:albumArtist"},
+        {"artist", "xesam:artist"},     {"comment", "xesam:comment"},
+        {"composer", "xesam:composer"}, {"date", "xesam:contentCreated"},
+        {"disc", "xesam:discNumber"},   {"genre", "xesam:genre"},
+        {"title", "xesam:title"},       {"track", "xesam:trackNumber"},
+        {"url", "xesam:url"},
     };
     int first = 0;
     int last = 10;
@@ -150,6 +116,43 @@ const char *tag2xesim(const char *tagname) {
     } else
         return NULL;
 }
+
+#ifndef TEST
+#include <dbus/dbus-protocol.h>
+#include <dbus/dbus.h>
+
+#include <libavcodec/avcodec.h>
+#include <libavcodec/codec_desc.h>
+#include <libavformat/avformat.h>
+#include <libavformat/avio.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/error.h>
+#include <libavutil/mathematics.h>
+#include <libavutil/opt.h>
+#include <libavutil/rational.h>
+#include <libavutil/samplefmt.h>
+#include <libswresample/swresample.h>
+
+#include <pulse/simple.h>
+
+#define SAMPLE_RATE 44100
+#define CHANNELS 2
+
+typedef struct {
+    AVFormatContext *fmt;
+    int astream;
+    AVCodecContext *cc;
+    SwrContext *swr;
+} ffmpegparams_t;
+
+enum status_t { PLAYING, PAUSED, STOPPED, QUITTING };
+
+enum status_t status = STOPPED;
+char *uri = NULL;
+int64_t position = 0;
+ffmpegparams_t ffmpegparams;
+
+typedef pa_simple audio_t;
 
 audio_t *initaudio() {
     pa_simple *s;
@@ -225,18 +228,18 @@ int openuri(const char *uri, ffmpegparams_t *ffmpegparams) {
     return 0;
 }
 
-// dbus_bool_t add_variant(DBusMessageIter *iter, int type, void *value) {
-//     DBusMessageIter sub;
-//     char typestr[2];
-//     typestr[0] = type;
-//     typestr[1] = 0;
-//     if (dbus_message_iter_open_container(iter, DBUS_TYPE_VARIANT, typestr, &sub)) {
-//         dbus_message_iter_append_basic(&sub, type, value);
-//         dbus_message_iter_close_container(iter, &sub);
-//         return TRUE;
-//     }
-//     return FALSE;
-// }
+dbus_bool_t add_variant(DBusMessageIter *iter, int type, void *value) {
+    DBusMessageIter sub;
+    char typestr[2];
+    typestr[0] = type;
+    typestr[1] = 0;
+    if (dbus_message_iter_open_container(iter, DBUS_TYPE_VARIANT, typestr, &sub)) {
+        dbus_message_iter_append_basic(&sub, type, value);
+        dbus_message_iter_close_container(iter, &sub);
+        return TRUE;
+    }
+    return FALSE;
+}
 
 dbus_bool_t add_dict_entry(DBusMessageIter *iter, const char *key, int type, const void *value) {
     DBusMessageIter sub[2];
@@ -256,19 +259,26 @@ dbus_bool_t add_dict_entry(DBusMessageIter *iter, const char *key, int type, con
     }
     return FALSE;
 }
-dbus_bool_t get_relevant_args(DBusMessage *msg, const char *const *interface, const char *const *property) {
+
+dbus_bool_t get_relevant_args(DBusMessage *msg, const char **interface, const char **property) {
     DBusMessageIter iter;
     dbus_message_iter_init(msg, &iter);
-    if (!(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING)) {
+    if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_STRING) {
         return FALSE;
     }
-    dbus_message_iter_get_basic(&iter, &interface);
-    if (!(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING)) {
+    dbus_message_iter_get_basic(&iter, interface);
+    if (dbus_message_iter_has_next(&iter)) {
+        dbus_message_iter_next(&iter);
+    } else {
         return FALSE;
     }
-    dbus_message_iter_get_basic(&iter, &property);
+    if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_STRING) {
+        return FALSE;
+    }
+    dbus_message_iter_get_basic(&iter, property);
     return TRUE;
 }
+
 void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpegparams_t *ffmpegparams) {
     DBusMessage *reply = NULL;
     if (dbus_message_is_method_call(msg, IFACE_PLAYER, "OpenUri")) {
@@ -332,164 +342,181 @@ void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpegparams_t *ffmp
         reply = dbus_message_new_method_return(msg);
     } else if (dbus_message_is_method_call(msg, DBUS_INTERFACE_PROPERTIES, "Get")) {
         const char *interface = NULL, *property = NULL;
-        if (!get_relevant_args(msg, &interface, &property)) {
-            reply = dbus_message_new_error(msg, "org.mpris.MediaPlayer2.tinyaudio.Error",
-                                           "Expected interface and property arguments");
-        } else {
+        if (get_relevant_args(msg, &interface, &property)) {
+            DBusMessageIter iter;
             reply = dbus_message_new_method_return(msg);
-        }
-
-        if (strcmp(interface, IFACE_ROOT) == 0) {
-            if (strcmp(property, "CanQuit") == 0) {
-                dbus_bool_t val = 0;
-                dbus_message_append_args(reply, DBUS_TYPE_BOOLEAN, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "FullScreen") == 0) {
-                dbus_bool_t val = 0;
-                dbus_message_append_args(reply, DBUS_TYPE_BOOLEAN, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "CanSetFullscreen") == 0) {
-                dbus_bool_t val = 0;
-                dbus_message_append_args(reply, DBUS_TYPE_BOOLEAN, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "CanRaise") == 0) {
-                dbus_bool_t val = 0;
-                dbus_message_append_args(reply, DBUS_TYPE_BOOLEAN, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "HasTrackList") == 0) {
-                dbus_bool_t val = 0;
-                dbus_message_append_args(reply, DBUS_TYPE_BOOLEAN, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "Identity") == 0) {
-                const char *val = "tinyaudio";
-                dbus_message_append_args(reply, DBUS_TYPE_STRING, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "DesktopEntry") == 0) {
-                const char *val = "tinyaudio";
-                dbus_message_append_args(reply, DBUS_TYPE_STRING, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "SupportedUriSchemes") == 0) {
-                DBusMessageIter iter, subiter;
-                dbus_message_iter_init_append(reply, &iter);
-                if (dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING, &subiter)) {
-                    void *protoiter = NULL;
-                    const char *proto = avio_enum_protocols(&protoiter, 0);
-                    while (proto != NULL) {
-                        if (!dbus_message_iter_append_basic(&subiter, DBUS_TYPE_STRING, &proto)) {
-                            dbus_message_iter_abandon_container(&iter, &subiter);
-                            goto abort1;
-                        }
-                        proto = avio_enum_protocols(&protoiter, 0);
-                    };
-                    dbus_message_iter_close_container(&iter, &subiter);
-                abort1:;
-                }
-            } else if (strcmp(property, "SupportedMimeTypes") == 0) {
-                DBusMessageIter iter, subiter;
-                dbus_message_iter_init_append(reply, &iter);
-                if (dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING, &subiter)) {
-                    for (const AVCodecDescriptor *desc = NULL; desc != NULL; desc = avcodec_descriptor_next(desc)) {
-                        for (int i = 0; desc->mime_types[i] != NULL; i++) {
-                            // NOTE: if there are cases where two codecs support the same mimetype, then this needs
-                            // to use a hash map
-                            if (!dbus_message_iter_append_basic(&subiter, DBUS_TYPE_STRING, &desc->mime_types[i])) {
-                                dbus_message_iter_abandon_container(&iter, &subiter);
-                                goto abort2;
-                            }
-                        }
-                    }
-                    dbus_message_iter_close_container(&iter, &subiter);
-                abort2:;
-                }
-            } else {
-                reply = dbus_message_new_error(msg, "org.freedesktop.DBus.Properties.Get.Error", "No such property");
-            }
-        } else if (strcmp(interface, IFACE_PLAYER) == 0) {
-            if (strcmp(property, "PlaybackStatus") == 0) {
-                char *statusstr = NULL;
-                switch (status) {
-                    case PLAYING:
-                        statusstr = "Playing";
-                        break;
-                    case PAUSED:
-                        statusstr = "Paused";
-                        break;
-                    case STOPPED:
-                        statusstr = "Stopped";
-                        break;
-                    case QUITTING:
-                        break;
-                }
-                dbus_message_append_args(reply, DBUS_TYPE_STRING, &statusstr, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "LoopStatus") == 0) {
-                const char *val = "None";
-                dbus_message_append_args(reply, DBUS_TYPE_STRING, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "Rate") == 0) {
-                double val = 1.0;
-                dbus_message_append_args(reply, DBUS_TYPE_DOUBLE, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "Shuffle") == 0) {
-                dbus_bool_t val = 0;
-                dbus_message_append_args(reply, DBUS_TYPE_BOOLEAN, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "Metadata") == 0) {
-                DBusMessageIter iter, sub;
-                dbus_message_iter_init_append(reply, &iter);
-                if (dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "{sv}", &sub)) {
-                    const char *trackid = "mpris:trackId";
-                    const char *path = "/nil";
-
-                    if (!add_dict_entry(&sub, trackid, DBUS_TYPE_OBJECT_PATH, &path)) {
-                        dbus_message_iter_abandon_container(&iter, &sub);
-                    }
-
-                    const AVDictionaryEntry *tag = NULL;
-                    while ((tag = av_dict_iterate(ffmpegparams->fmt->metadata, tag))) {
-                        const char *key = NULL;
-                        if (strcmp(tag->key, "StreamTitle") == 0) {
-                            key = "xesim:title";
-                        } else if (strcmp(tag->key, "icy-genre") == 0) {
-                            key = "xesim:genre";
+            dbus_message_iter_init_append(reply, &iter);
+            if (strcmp(interface, IFACE_ROOT) == 0) {
+                if (strcmp(property, "CanQuit") == 0) {
+                    dbus_bool_t val = 0;
+                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
+                } else if (strcmp(property, "FullScreen") == 0) {
+                    dbus_bool_t val = 0;
+                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
+                } else if (strcmp(property, "CanSetFullscreen") == 0) {
+                    dbus_bool_t val = 0;
+                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
+                } else if (strcmp(property, "CanRaise") == 0) {
+                    dbus_bool_t val = 0;
+                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
+                } else if (strcmp(property, "HasTrackList") == 0) {
+                    dbus_bool_t val = 0;
+                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
+                } else if (strcmp(property, "Identity") == 0) {
+                    const char *val = "tinyaudio";
+                    add_variant(&iter, DBUS_TYPE_STRING, &val);
+                } else if (strcmp(property, "DesktopEntry") == 0) {
+                    const char *val = "tinyaudio";
+                    add_variant(&iter, DBUS_TYPE_STRING, &val);
+                } else if (strcmp(property, "SupportedUriSchemes") == 0) {
+                    DBusMessageIter variter, subiter;
+                    if (dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "as", &variter)) {
+                        if (dbus_message_iter_open_container(&variter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING,
+                                                             &subiter)) {
+                            void *protoiter = NULL;
+                            const char *proto = avio_enum_protocols(&protoiter, 0);
+                            while (proto != NULL) {
+                                if (!dbus_message_iter_append_basic(&subiter, DBUS_TYPE_STRING, &proto)) {
+                                    dbus_message_iter_abandon_container(&iter, &subiter);
+                                    goto abort1;
+                                }
+                                proto = avio_enum_protocols(&protoiter, 0);
+                            };
+                            dbus_message_iter_close_container(&iter, &subiter);
+                        abort1:;
                         } else {
-                            key = tag2xesim(tag->key);
-                        };
-                        if (key) {
-                            add_dict_entry(&sub, key, DBUS_TYPE_STRING, &tag->value);
+                            dbus_message_iter_abandon_container(&iter, &variter);
                         }
                     }
-                    while ((tag = av_dict_iterate(ffmpegparams->fmt->streams[ffmpegparams->astream]->metadata, tag))) {
-                        const char *key = tag2xesim(tag->key);
-                        add_dict_entry(&sub, key, DBUS_TYPE_STRING, &tag->value);
+                } else if (strcmp(property, "SupportedMimeTypes") == 0) {
+                    DBusMessageIter variter, subiter;
+                    if (dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "as", &variter)) {
+                        if (dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING,
+                                                             &subiter)) {
+                            for (const AVCodecDescriptor *desc = NULL; desc != NULL;
+                                 desc = avcodec_descriptor_next(desc)) {
+                                for (int i = 0; desc->mime_types[i] != NULL; i++) {
+                                    // NOTE: if there are cases where two codecs support the same mimetype, then this
+                                    // needs to use a hash map
+                                    if (!dbus_message_iter_append_basic(&subiter, DBUS_TYPE_STRING,
+                                                                        &desc->mime_types[i])) {
+                                        dbus_message_iter_abandon_container(&iter, &subiter);
+                                        goto abort2;
+                                    }
+                                }
+                            }
+                            dbus_message_iter_close_container(&iter, &subiter);
+                        abort2:;
+                        } else {
+                            dbus_message_iter_abandon_container(&iter, &variter);
+                        }
                     }
-                    dbus_message_iter_close_container(&iter, &sub);
+                } else {
+                    reply =
+                        dbus_message_new_error(msg, "org.freedesktop.DBus.Properties.Get.Error", "No such property");
                 }
-            } else if (strcmp(property, "Volume") == 0) {
-                double val = 1.0;
-                dbus_message_append_args(reply, DBUS_TYPE_DOUBLE, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "Position") == 0) {
-                dbus_message_append_args(reply, DBUS_TYPE_INT64, &position, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "MinimumRate") == 0) {
-                double val = 1.0;
-                dbus_message_append_args(reply, DBUS_TYPE_DOUBLE, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "MaximumRate") == 0) {
-                double val = 1.0;
-                dbus_message_append_args(reply, DBUS_TYPE_DOUBLE, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "CanGoNext") == 0) {
-                dbus_bool_t val = 0;
-                dbus_message_append_args(reply, DBUS_TYPE_BOOLEAN, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "CanGoPrevious") == 0) {
-                dbus_bool_t val = 0;
-                dbus_message_append_args(reply, DBUS_TYPE_BOOLEAN, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "CanPlay") == 0) {
-                dbus_bool_t val = 0;
-                dbus_message_append_args(reply, DBUS_TYPE_BOOLEAN, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "CanPause") == 0) {
-                dbus_bool_t val = 0;
-                dbus_message_append_args(reply, DBUS_TYPE_BOOLEAN, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "CanSeek") == 0) {
-                dbus_bool_t val = 0;
-                dbus_message_append_args(reply, DBUS_TYPE_BOOLEAN, &val, DBUS_TYPE_INVALID);
-            } else if (strcmp(property, "CanControl") == 0) {
-                dbus_bool_t val = 1;
-                dbus_message_append_args(reply, DBUS_TYPE_BOOLEAN, &val, DBUS_TYPE_INVALID);
+            } else if (strcmp(interface, IFACE_PLAYER) == 0) {
+                if (strcmp(property, "PlaybackStatus") == 0) {
+                    char *val = NULL;
+                    switch (status) {
+                        case PLAYING:
+                            val = "Playing";
+                            break;
+                        case PAUSED:
+                            val = "Paused";
+                            break;
+                        case STOPPED:
+                            val = "Stopped";
+                            break;
+                        case QUITTING:
+                            break;
+                    }
+                    add_variant(&iter, DBUS_TYPE_STRING, &val);
+                } else if (strcmp(property, "LoopStatus") == 0) {
+                    const char *val = "None";
+                    add_variant(&iter, DBUS_TYPE_STRING, &val);
+                } else if (strcmp(property, "Rate") == 0) {
+                    double val = 1.0;
+                    add_variant(&iter, DBUS_TYPE_DOUBLE, &val);
+                } else if (strcmp(property, "Shuffle") == 0) {
+                    dbus_bool_t val = 0;
+                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
+                } else if (strcmp(property, "Metadata") == 0) {
+                    DBusMessageIter var, sub;
+                    if (dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "a{sv}", &var)) {
+                        if (dbus_message_iter_open_container(&var, DBUS_TYPE_ARRAY, "{sv}", &sub)) {
+                            const char *trackid = "mpris:trackId";
+                            const char *path = OBJ_PATH;
+
+                            if (!add_dict_entry(&sub, trackid, DBUS_TYPE_OBJECT_PATH, &path)) {
+                                dbus_message_iter_abandon_container(&iter, &sub);
+                            }
+
+                            const AVDictionaryEntry *tag = NULL;
+                            while ((tag = av_dict_iterate(ffmpegparams->fmt->metadata, tag))) {
+                                const char *key = NULL;
+                                if (strcmp(tag->key, "StreamTitle") == 0) {
+                                    key = "xesam:title";
+                                } else if (strcmp(tag->key, "icy-genre") == 0) {
+                                    key = "xesam:genre";
+                                } else {
+                                    key = tag2xesam(tag->key);
+                                };
+                                if (key) {
+                                    add_dict_entry(&sub, key, DBUS_TYPE_STRING, &tag->value);
+                                }
+                            }
+                            while ((tag = av_dict_iterate(ffmpegparams->fmt->streams[ffmpegparams->astream]->metadata,
+                                                          tag))) {
+                                const char *key = tag2xesam(tag->key);
+                                add_dict_entry(&sub, key, DBUS_TYPE_STRING, &tag->value);
+                            }
+                            dbus_message_iter_close_container(&var, &sub);
+                            dbus_message_iter_close_container(&iter, &var);
+                        } else {
+                            dbus_message_iter_abandon_container(&iter, &var);
+                        }
+                    }
+                } else if (strcmp(property, "Volume") == 0) {
+                    double val = 1.0;
+                    add_variant(&iter, DBUS_TYPE_DOUBLE, &val);
+                } else if (strcmp(property, "Position") == 0) {
+                    add_variant(&iter, DBUS_TYPE_INT64, &position);
+                } else if (strcmp(property, "MinimumRate") == 0) {
+                    double val = 1.0;
+                    add_variant(&iter, DBUS_TYPE_DOUBLE, &val);
+                } else if (strcmp(property, "MaximumRate") == 0) {
+                    double val = 1.0;
+                    add_variant(&iter, DBUS_TYPE_DOUBLE, &val);
+                } else if (strcmp(property, "CanGoNext") == 0) {
+                    dbus_bool_t val = 0;
+                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
+                } else if (strcmp(property, "CanGoPrevious") == 0) {
+                    dbus_bool_t val = 0;
+                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
+                } else if (strcmp(property, "CanPlay") == 0) {
+                    dbus_bool_t val = 0;
+                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
+                } else if (strcmp(property, "CanPause") == 0) {
+                    dbus_bool_t val = 0;
+                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
+                } else if (strcmp(property, "CanSeek") == 0) {
+                    dbus_bool_t val = 0;
+                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
+                } else if (strcmp(property, "CanControl") == 0) {
+                    dbus_bool_t val = 1;
+                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
+                } else {
+                    dbus_message_unref(reply);
+                    reply = dbus_message_new_error(msg, "org.freedesktop.Properties.Get.Error", "No such property");
+                }
             } else {
                 dbus_message_unref(reply);
-                reply = dbus_message_new_error(msg, "org.freedesktop.Properties.Get.Error", "No such property");
+                reply = dbus_message_new_error(msg, "org.freedesktop.Properties.Get.Error", "No such interface");
             }
         } else {
-            dbus_message_unref(reply);
-            reply = dbus_message_new_error(msg, "org.freedesktop.Properties.Get.Error", "No such interface");
+            reply = dbus_message_new_error(msg, "org.mpris.MediaPlayer2.tinyaudio.Error",
+                                           "Expected interface and property arguments");
         }
     } else if (dbus_message_is_method_call(msg, DBUS_INTERFACE_PROPERTIES, "Set")) {
         const char *interface, *property;
@@ -537,7 +564,6 @@ dbus_bool_t handle_dbus_error(DBusError *e, const char *msg) {
         return FALSE;
     }
 }
-
 int main(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <uri>\n", argv[0]);
@@ -671,3 +697,10 @@ int main(int argc, char **argv) {
         }
     }
 }
+#else
+int main(int argc, char *argv[]) {
+    const char *xml = generate_xml_data();
+    puts(xml);
+    free((void *)xml);
+}
+#endif

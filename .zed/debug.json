@@ -4,10 +4,19 @@
 // see: https://zed.dev/docs/debugger
 [
   {
-    "label": "Debug Program",
+    "label": "Attach and Debug Program",
     "request": "attach",
-    "name": "Attach to Program",
     "adapter": "CodeLLDB",
-    "pid": "$ZED_PICK_PID"
+    "pid": "$ZED_PICK_PID",
+  },
+  {
+    "label": "Launch and Debug Program",
+    "request": "launch",
+    "adapter": "CodeLLDB",
+    "program": "build/tinyaudio",
+    "args": [
+      "https://stream.synthwaveradio.eu/listen/synthwaveradio.eu/radio.mp3",
+    ],
+    "initCommands": ["settings set target.process.follow-fork-mode child"],
   },
 ]
