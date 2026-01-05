@@ -1,4 +1,4 @@
-FLAGS = -O2 -s
+FLAGS = -Os -s
 
 all:
 	@mkdir -p build

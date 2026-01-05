@@ -30,12 +30,32 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <dbus/dbus-protocol.h>
 #include <dbus/dbus-shared.h>
+#include <dbus/dbus.h>
+
+#include <libavcodec/avcodec.h>
+#include <libavcodec/codec_desc.h>
+#include <libavformat/avformat.h>
+#include <libavformat/avio.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/error.h>
+#include <libavutil/mathematics.h>
+#include <libavutil/opt.h>
+#include <libavutil/rational.h>
+#include <libavutil/samplefmt.h>
+#include <libswresample/swresample.h>
+
+#include <pulse/simple.h>
+
+#define SAMPLE_RATE 44100
+#define CHANNELS 2
 
 #define BUS_NAME "org.mpris.MediaPlayer2.tinyaudio"
 #define IFACE_ROOT "org.mpris.MediaPlayer2"
 #define IFACE_PLAYER "org.mpris.MediaPlayer2.Player"
 #define OBJ_PATH "/org/mpris/MediaPlayer2"
+#define NO_TRACK "/TrackList/NoTrack"
 #define XML_DATA                                                                                                       \
     "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\" "                                \
     "\"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\"><node "                                          \
@@ -64,96 +84,144 @@
     "name=\"Get\"/><method name=\"Set\"/><method name=\"GetAll\"/></interface><interface "                             \
     "name=\"org.freedesktop.DBus.Introspectable\"><method name=\"Introspect\"/></interface></node>";
 
-const char *tag2xesam(const char *tagname) {
-    static const char *tagmap[][2] = {
-        {"album", "xesam:album"},       {"album_artist", "xesam:albumArtist"},
-        {"artist", "xesam:artist"},     {"comment", "xesam:comment"},
-        {"composer", "xesam:composer"}, {"date", "xesam:contentCreated"},
-        {"disc", "xesam:discNumber"},   {"genre", "xesam:genre"},
-        {"title", "xesam:title"},       {"track", "xesam:trackNumber"},
-        {"url", "xesam:url"},
-    };
-    int first = 0;
-    int last = 10;
-    int index = -1;
-    while (first < last) {
-        int cmpresult = strcmp(tagname, tagmap[first][0]);
-        if (cmpresult < 0) {
-            return NULL;
-        } else if (cmpresult == 0) {
-            index = first;
-            break;
-        } else {
-            int cmpresult = strcmp(tagname, tagmap[last][0]);
-            if (cmpresult > 0) {
-                return NULL;
-            } else if (cmpresult == 0) {
-                index = last;
-                break;
-            } else {
-                if (first + 1 == last)
-                    return NULL;
-                int mid = (first + last) / 2;
-                int cmpresult = strcmp(tagname, tagmap[mid][0]);
-                if (cmpresult > 0) {
-                    first = mid + 1;
-                    last -= 1;
-                } else if (cmpresult == 0) {
-                    index = mid;
-                    break;
-                } else {
-                    last = mid - 1;
-                    first += 1;
-                }
-            }
-        }
-    }
-    if (index != -1) {
-        if (tagmap[index][1])
-            return tagmap[index][1];
-        else
-            return tagname;
-    } else
-        return NULL;
-}
-
-#ifndef TEST
-#include <dbus/dbus-protocol.h>
-#include <dbus/dbus.h>
-
-#include <libavcodec/avcodec.h>
-#include <libavcodec/codec_desc.h>
-#include <libavformat/avformat.h>
-#include <libavformat/avio.h>
-#include <libavutil/channel_layout.h>
-#include <libavutil/error.h>
-#include <libavutil/mathematics.h>
-#include <libavutil/opt.h>
-#include <libavutil/rational.h>
-#include <libavutil/samplefmt.h>
-#include <libswresample/swresample.h>
-
-#include <pulse/simple.h>
-
-#define SAMPLE_RATE 44100
-#define CHANNELS 2
-
 typedef struct {
     AVFormatContext *fmt;
     int astream;
     AVCodecContext *cc;
     SwrContext *swr;
 } ffmpegparams_t;
+typedef struct Property {
+    const char *name;
+    char type;
+    void *value;
+} Property;
 
-enum status_t { PLAYING, PAUSED, STOPPED, QUITTING };
+static struct RootPropertyValues {
+    dbus_bool_t can_quit;
+    dbus_bool_t can_raise;
+    dbus_bool_t has_track_list;
+    const char *identity;
+    dbus_bool_t can_set_fullscreen;
+    dbus_bool_t fullscreen;
+} root_values = {.can_quit = TRUE,
+                 .can_raise = FALSE,
+                 .has_track_list = FALSE,
+                 .identity = "tinyaudio",
+                 .can_set_fullscreen = FALSE,
+                 .fullscreen = FALSE};
 
-enum status_t status = STOPPED;
+struct Property rootprops[] = {{"CanQuit", DBUS_TYPE_BOOLEAN, &root_values.can_quit},
+                               {"CanRaise", DBUS_TYPE_BOOLEAN, &root_values.can_raise},
+                               {"CanSetFullscreen", DBUS_TYPE_BOOLEAN, &root_values.can_set_fullscreen},
+                               {"Fullscreen", DBUS_TYPE_BOOLEAN, &root_values.fullscreen},
+                               {"HasTrackList", DBUS_TYPE_BOOLEAN, &root_values.has_track_list},
+                               {"Identity", DBUS_TYPE_STRING, &root_values.identity}};
+struct PlayerPropertyValues {
+    const char *playback_status;
+    double rate;
+    dbus_bool_t shuffle;
+    const char *loop_status;
+    double minimum_rate;
+    double maximum_rate;
+    dbus_bool_t can_go_next;
+    dbus_bool_t can_go_previous;
+    dbus_bool_t can_play;
+    dbus_bool_t can_pause;
+    dbus_bool_t can_seek;
+    dbus_bool_t can_control;
+} player_values = {.playback_status = "Stopped",
+                   .rate = 1.0,
+                   .shuffle = 0,
+                   .loop_status = "None",
+                   .minimum_rate = 1.0,
+                   .maximum_rate = 1.0,
+                   .can_go_next = FALSE,
+                   .can_go_previous = FALSE,
+                   .can_play = TRUE,
+                   .can_pause = TRUE,
+                   .can_seek = 0,
+                   .can_control = TRUE};
+struct Property playerprops[] = {{"CanControl", DBUS_TYPE_BOOLEAN, &player_values.can_control},
+                                 {"CanGoNext", DBUS_TYPE_BOOLEAN, &player_values.can_go_next},
+                                 {"CanGoPrevious", DBUS_TYPE_BOOLEAN, &player_values.can_go_previous},
+                                 {"CanPause", DBUS_TYPE_BOOLEAN, &player_values.can_pause},
+                                 {"CanPlay", DBUS_TYPE_BOOLEAN, &player_values.can_play},
+                                 {"CanSeek", DBUS_TYPE_BOOLEAN, &player_values.can_seek},
+                                 {"LoopStatus", DBUS_TYPE_STRING, &player_values.loop_status},
+                                 {"MinimumRate", DBUS_TYPE_DOUBLE, &player_values.minimum_rate},
+                                 {"MaximumRate", DBUS_TYPE_DOUBLE, &player_values.maximum_rate},
+                                 {"PlaybackStatus", DBUS_TYPE_STRING, &player_values.playback_status},
+                                 {"Rate", DBUS_TYPE_DOUBLE, &player_values.rate},
+                                 {"Shuffle", DBUS_TYPE_BOOLEAN, &player_values.shuffle}};
+
 char *uri = NULL;
 int64_t position = 0;
 ffmpegparams_t ffmpegparams;
+enum status_t { PLAYING, PAUSED, STOPPED, QUITTING };
+enum status_t status = STOPPED;
+
+static inline void set_playing() {
+    status = PLAYING;
+    player_values.playback_status = "Playing";
+}
+static inline void set_paused() {
+    status = PAUSED;
+    player_values.playback_status = "Paused";
+}
+static inline void set_stopped() {
+    status = STOPPED;
+    player_values.playback_status = "Stopped";
+}
+
+typedef const char *(__get_element_t)(const void *);
+void *binsearch(const char *target, const void *array, int nelements, int size, __get_element_t func) {
+    int first = 0;
+    int last = nelements - 1;
+
+    while (first <= last) {
+        int mid = (first + last) / 2;
+        int cmpresult = strcmp(target, func(array + mid * size));
+
+        if (cmpresult == 0) {
+            return (void *)array + mid * size;
+        } else if (cmpresult < 0) {
+            last = mid - 1;
+        } else {
+            first = mid + 1;
+        }
+    }
+    return NULL;
+}
+#define BINSEARCH(needle, haystack, get_element_cb)                                                                    \
+    binsearch(needle, haystack, sizeof(haystack) / sizeof(haystack[0]), sizeof(haystack[0]), get_element_cb)
+
+const char *gettag(char *tag[2]) { return tag[1]; }
+const char *tag2xesam(const char *tagname) {
+    static const char *tagmap[][2] = {{"album", "xesam:album"},
+                                      {"album_artist", "xesam:albumArtist"},
+                                      {"artist", "xesam:artist"},
+                                      {"comment", "xesam:comment"},
+                                      {"composer", "xesam:composer"},
+                                      {"date", "xesam:contentCreated"},
+                                      {"disc", "xesam:discNumber"},
+                                      {"genre", "xesam:genre"},
+                                      {"title", "xesam:title"},
+                                      {"track", "xesam:trackNumber"},
+                                      {"url", "xesam:url"}};
+
+    const char **tag = BINSEARCH(tagname, tagmap, (__get_element_t *)gettag);
+    if (tag != NULL) {
+        return tag[1];
+    }
+
+    return NULL;
+}
+
+int propcmp(Property *a, Property *b) { return strcmp(a->name, b->name); }
+
+const char *getprop(Property *p) { return p->name; }
 
 typedef pa_simple audio_t;
-
 audio_t *initaudio() {
     pa_simple *s;
     pa_sample_spec ss;
@@ -228,36 +296,132 @@ int openuri(const char *uri, ffmpegparams_t *ffmpegparams) {
     return 0;
 }
 
-dbus_bool_t add_variant(DBusMessageIter *iter, int type, void *value) {
+void add_basic_variant(DBusMessageIter *iter, int type, const void *value) {
     DBusMessageIter sub;
     char typestr[2];
     typestr[0] = type;
     typestr[1] = 0;
-    if (dbus_message_iter_open_container(iter, DBUS_TYPE_VARIANT, typestr, &sub)) {
-        dbus_message_iter_append_basic(&sub, type, value);
-        dbus_message_iter_close_container(iter, &sub);
-        return TRUE;
-    }
-    return FALSE;
+    dbus_message_iter_open_container(iter, DBUS_TYPE_VARIANT, typestr, &sub);
+    dbus_message_iter_append_basic(&sub, type, value);
+    dbus_message_iter_close_container(iter, &sub);
 }
 
-dbus_bool_t add_dict_entry(DBusMessageIter *iter, const char *key, int type, const void *value) {
-    DBusMessageIter sub[2];
-    char typestr[2];
-    typestr[0] = type;
-    typestr[1] = 0;
-    if (dbus_message_iter_open_container(iter, DBUS_TYPE_DICT_ENTRY, NULL, &sub[0])) {
-        dbus_message_iter_append_basic(&sub[0], DBUS_TYPE_STRING, &key);
-        if (dbus_message_iter_open_container(&sub[0], DBUS_TYPE_VARIANT, typestr, &sub[1])) {
-            dbus_message_iter_append_basic(&sub[1], type, value);
-            dbus_message_iter_close_container(&sub[0], &sub[1]);
-            dbus_message_iter_close_container(iter, &sub[0]);
-            return TRUE;
+void add_dict_entry(DBusMessageIter *iter, const char *key, int type, const void *value) {
+    DBusMessageIter sub;
+    dbus_message_iter_open_container(iter, DBUS_TYPE_DICT_ENTRY, NULL, &sub);
+    dbus_message_iter_append_basic(&sub, DBUS_TYPE_STRING, &key);
+
+    add_basic_variant(&sub, type, value);
+
+    dbus_message_iter_close_container(iter, &sub);
+}
+
+typedef void (*__add_elements_t)(DBusMessageIter *, void *);
+
+static inline void add_metadata_entries(DBusMessageIter *iter, AVDictionary *metadata) {
+    const char *path = OBJ_PATH NO_TRACK;
+
+    add_dict_entry(iter, "mpris:trackId", DBUS_TYPE_OBJECT_PATH, &path);
+
+    const AVDictionaryEntry *tag = NULL;
+    while ((tag = av_dict_iterate(metadata, tag))) {
+        const char *key = NULL;
+        if (strcmp(tag->key, "StreamTitle") == 0) {
+            key = "xesam:title";
+        } else if (strcmp(tag->key, "icy-genre") == 0) {
+            key = "xesam:genre";
         } else {
-            dbus_message_iter_abandon_container(iter, &sub[0]);
+            key = tag2xesam(tag->key);
+        };
+        if (key) {
+            add_dict_entry(iter, key, DBUS_TYPE_STRING, &tag->value);
         }
     }
-    return FALSE;
+}
+#define ADD_CONTAINER(iter, container_type, contents_type, expr)                                                       \
+    ({                                                                                                                 \
+        DBusMessageIter container;                                                                                     \
+        assert(dbus_message_iter_open_container(iter, container_type, contents_type, &container));                     \
+        expr;                                                                                                          \
+        dbus_message_iter_close_container(iter, &container);                                                           \
+    })
+#define ADD_ARRAY_VARIANT(iter, content_type, expr)                                                                    \
+    {                                                                                                                  \
+        DBusMessageIter sub, array;                                                                                    \
+        dbus_message_iter_open_container(iter, DBUS_TYPE_VARIANT, "a" content_type, &sub);                             \
+        dbus_message_iter_open_container(&sub, DBUS_TYPE_ARRAY, content_type, &array);                                 \
+        {                                                                                                              \
+            expr;                                                                                                      \
+        }                                                                                                              \
+        dbus_message_iter_close_container(&sub, &array);                                                               \
+        dbus_message_iter_close_container(iter, &sub);                                                                 \
+    }
+#define ADD_MAP_VARIANT(iter, expr)                                                                                    \
+    {                                                                                                                  \
+        DBusMessageIter sub, map;                                                                                      \
+        dbus_message_iter_open_container(iter, DBUS_TYPE_VARIANT, "a{sv}", &sub);                                      \
+        dbus_message_iter_open_container(&sub, DBUS_TYPE_ARRAY, "{sv}", &map);                                         \
+        {                                                                                                              \
+            expr;                                                                                                      \
+        }                                                                                                              \
+        dbus_message_iter_close_container(&sub, &map);                                                                 \
+        dbus_message_iter_close_container(iter, &sub);                                                                 \
+    }
+#define ADD_DICT_ENTRY(iter, name, expr)                                                                               \
+    {                                                                                                                  \
+        const char *key = name;                                                                                        \
+        dbus_message_iter_append_basic(iter, DBUS_TYPE_STRING, &key);                                                  \
+        {                                                                                                              \
+            expr;                                                                                                      \
+        }                                                                                                              \
+    }
+void add_protocols_variant(DBusMessageIter *iter) {
+    ADD_ARRAY_VARIANT(iter, "s", {
+        void *protoiter = NULL;
+        const char *proto = avio_enum_protocols(&protoiter, 0);
+        while (proto != NULL) {
+            dbus_message_iter_append_basic(iter, DBUS_TYPE_STRING, &proto);
+            proto = avio_enum_protocols(&protoiter, 0);
+        };
+    });
+}
+void add_mimetypes_variant(DBusMessageIter *iter) {
+    ADD_ARRAY_VARIANT(iter, "s", {
+        for (const AVCodecDescriptor *desc = NULL; desc != NULL; desc = avcodec_descriptor_next(desc)) {
+            for (int i = 0; desc->mime_types[i] != NULL; i++) {
+                // NOTE: if there are cases where two codecs support the same mimetype, then this
+                // needs to use a hash map
+                dbus_message_iter_append_basic(iter, DBUS_TYPE_STRING, &desc->mime_types[i]);
+            }
+        }
+    });
+}
+
+void add_metadata_variant(DBusMessageIter *iter, AVDictionary *metadata) {
+    ADD_MAP_VARIANT(iter, { add_metadata_entries(&map, metadata); })
+}
+
+void add_metadata_dict_entry(DBusMessageIter *iter, AVDictionary *metadata) {
+    DBusMessageIter entry;
+    dbus_message_iter_open_container(iter, DBUS_TYPE_DICT_ENTRY, NULL, &entry);
+    const char *val = "Metadata";
+    dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &val);
+    add_metadata_variant(&entry, metadata);
+    dbus_message_iter_close_container(iter, &entry);
+}
+
+void notify_properties_changed(DBusConnection *connection, __add_elements_t func, void *userdata) {
+    DBusMessageIter iter, sub;
+    DBusMessage *signal = dbus_message_new_signal(OBJ_PATH, DBUS_INTERFACE_PROPERTIES, "PropertiesChanged");
+    dbus_message_iter_init_append(signal, &iter);
+    const char *interface = IFACE_PLAYER;
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &interface);
+
+    ADD_CONTAINER(&iter, DBUS_TYPE_ARRAY, "{sv}", { func(&container, userdata); });
+
+    dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "s", &sub);
+    dbus_message_iter_close_container(&iter, &sub);
+    dbus_connection_send(connection, signal, NULL);
 }
 
 dbus_bool_t get_relevant_args(DBusMessage *msg, const char **interface, const char **property) {
@@ -278,7 +442,6 @@ dbus_bool_t get_relevant_args(DBusMessage *msg, const char **interface, const ch
     dbus_message_iter_get_basic(&iter, property);
     return TRUE;
 }
-
 void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpegparams_t *ffmpegparams) {
     DBusMessage *reply = NULL;
     if (dbus_message_is_method_call(msg, IFACE_PLAYER, "OpenUri")) {
@@ -290,17 +453,18 @@ void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpegparams_t *ffmp
         else
             dbus_message_iter_get_basic(&args, &uri);
         openuri(uri, ffmpegparams);
-        status = PLAYING;
+        set_playing();
+
         reply = dbus_message_new_method_return(msg);
     } else if (dbus_message_is_method_call(msg, IFACE_PLAYER, "Play")) {
         switch (status) {
             case PAUSED:
                 av_read_play(ffmpegparams->fmt);
-                status = PLAYING;
+                set_playing();
                 break;
             case STOPPED:
                 if (uri != NULL && !openuri(uri, ffmpegparams))
-                    status = PLAYING;
+                    set_playing();
                 break;
             default:
                 break;
@@ -309,22 +473,22 @@ void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpegparams_t *ffmp
     } else if (dbus_message_is_method_call(msg, IFACE_PLAYER, "Pause")) {
         if (status == PLAYING) {
             av_read_pause(ffmpegparams->fmt);
-            status = PAUSED;
+            set_paused();
         }
         reply = dbus_message_new_method_return(msg);
     } else if (dbus_message_is_method_call(msg, IFACE_PLAYER, "PlayPause")) {
         switch (status) {
             case PLAYING:
                 av_read_pause(ffmpegparams->fmt);
-                status = PAUSED;
+                set_paused();
                 break;
             case PAUSED:
                 av_read_play(ffmpegparams->fmt);
-                status = PLAYING;
+                set_playing();
                 break;
             case STOPPED:
                 if (uri != NULL && !openuri(uri, ffmpegparams))
-                    status = PLAYING;
+                    set_playing();
                 break;
             default:
                 break;
@@ -334,7 +498,7 @@ void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpegparams_t *ffmp
         if (status != STOPPED) {
             avcodec_free_context(&ffmpegparams->cc);
             avformat_close_input(&ffmpegparams->fmt);
-            status = STOPPED;
+            set_stopped();
         }
         reply = dbus_message_new_method_return(msg);
     } else if (dbus_message_is_method_call(msg, IFACE_ROOT, "Quit")) {
@@ -347,165 +511,23 @@ void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpegparams_t *ffmp
             reply = dbus_message_new_method_return(msg);
             dbus_message_iter_init_append(reply, &iter);
             if (strcmp(interface, IFACE_ROOT) == 0) {
-                if (strcmp(property, "CanQuit") == 0) {
-                    dbus_bool_t val = 0;
-                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
-                } else if (strcmp(property, "FullScreen") == 0) {
-                    dbus_bool_t val = 0;
-                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
-                } else if (strcmp(property, "CanSetFullscreen") == 0) {
-                    dbus_bool_t val = 0;
-                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
-                } else if (strcmp(property, "CanRaise") == 0) {
-                    dbus_bool_t val = 0;
-                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
-                } else if (strcmp(property, "HasTrackList") == 0) {
-                    dbus_bool_t val = 0;
-                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
-                } else if (strcmp(property, "Identity") == 0) {
-                    const char *val = "tinyaudio";
-                    add_variant(&iter, DBUS_TYPE_STRING, &val);
-                } else if (strcmp(property, "DesktopEntry") == 0) {
-                    const char *val = "tinyaudio";
-                    add_variant(&iter, DBUS_TYPE_STRING, &val);
+                Property *p = BINSEARCH(property, rootprops, (__get_element_t *)getprop);
+                if (p) {
+                    add_basic_variant(&iter, p->type, &p->value);
                 } else if (strcmp(property, "SupportedUriSchemes") == 0) {
-                    DBusMessageIter variter, subiter;
-                    if (dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "as", &variter)) {
-                        if (dbus_message_iter_open_container(&variter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING,
-                                                             &subiter)) {
-                            void *protoiter = NULL;
-                            const char *proto = avio_enum_protocols(&protoiter, 0);
-                            while (proto != NULL) {
-                                if (!dbus_message_iter_append_basic(&subiter, DBUS_TYPE_STRING, &proto)) {
-                                    dbus_message_iter_abandon_container(&iter, &subiter);
-                                    goto abort1;
-                                }
-                                proto = avio_enum_protocols(&protoiter, 0);
-                            };
-                            dbus_message_iter_close_container(&iter, &subiter);
-                        abort1:;
-                        } else {
-                            dbus_message_iter_abandon_container(&iter, &variter);
-                        }
-                    }
+                    ADD_ARRAY_VARIANT(&iter, "s", { add_protocols_variant(&array); });
                 } else if (strcmp(property, "SupportedMimeTypes") == 0) {
-                    DBusMessageIter variter, subiter;
-                    if (dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "as", &variter)) {
-                        if (dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING,
-                                                             &subiter)) {
-                            for (const AVCodecDescriptor *desc = NULL; desc != NULL;
-                                 desc = avcodec_descriptor_next(desc)) {
-                                for (int i = 0; desc->mime_types[i] != NULL; i++) {
-                                    // NOTE: if there are cases where two codecs support the same mimetype, then this
-                                    // needs to use a hash map
-                                    if (!dbus_message_iter_append_basic(&subiter, DBUS_TYPE_STRING,
-                                                                        &desc->mime_types[i])) {
-                                        dbus_message_iter_abandon_container(&iter, &subiter);
-                                        goto abort2;
-                                    }
-                                }
-                            }
-                            dbus_message_iter_close_container(&iter, &subiter);
-                        abort2:;
-                        } else {
-                            dbus_message_iter_abandon_container(&iter, &variter);
-                        }
-                    }
+                    ADD_ARRAY_VARIANT(&iter, "s", { add_mimetypes_variant(&array); });
                 } else {
                     reply =
                         dbus_message_new_error(msg, "org.freedesktop.DBus.Properties.Get.Error", "No such property");
                 }
             } else if (strcmp(interface, IFACE_PLAYER) == 0) {
-                if (strcmp(property, "PlaybackStatus") == 0) {
-                    char *val = NULL;
-                    switch (status) {
-                        case PLAYING:
-                            val = "Playing";
-                            break;
-                        case PAUSED:
-                            val = "Paused";
-                            break;
-                        case STOPPED:
-                            val = "Stopped";
-                            break;
-                        case QUITTING:
-                            break;
-                    }
-                    add_variant(&iter, DBUS_TYPE_STRING, &val);
-                } else if (strcmp(property, "LoopStatus") == 0) {
-                    const char *val = "None";
-                    add_variant(&iter, DBUS_TYPE_STRING, &val);
-                } else if (strcmp(property, "Rate") == 0) {
-                    double val = 1.0;
-                    add_variant(&iter, DBUS_TYPE_DOUBLE, &val);
-                } else if (strcmp(property, "Shuffle") == 0) {
-                    dbus_bool_t val = 0;
-                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
+                struct Property *p = BINSEARCH(property, playerprops, (__get_element_t *)getprop);
+                if (p) {
+                    add_basic_variant(&iter, p->type, &p->value);
                 } else if (strcmp(property, "Metadata") == 0) {
-                    DBusMessageIter var, sub;
-                    if (dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "a{sv}", &var)) {
-                        if (dbus_message_iter_open_container(&var, DBUS_TYPE_ARRAY, "{sv}", &sub)) {
-                            const char *trackid = "mpris:trackId";
-                            const char *path = OBJ_PATH;
-
-                            if (!add_dict_entry(&sub, trackid, DBUS_TYPE_OBJECT_PATH, &path)) {
-                                dbus_message_iter_abandon_container(&iter, &sub);
-                            }
-
-                            const AVDictionaryEntry *tag = NULL;
-                            while ((tag = av_dict_iterate(ffmpegparams->fmt->metadata, tag))) {
-                                const char *key = NULL;
-                                if (strcmp(tag->key, "StreamTitle") == 0) {
-                                    key = "xesam:title";
-                                } else if (strcmp(tag->key, "icy-genre") == 0) {
-                                    key = "xesam:genre";
-                                } else {
-                                    key = tag2xesam(tag->key);
-                                };
-                                if (key) {
-                                    add_dict_entry(&sub, key, DBUS_TYPE_STRING, &tag->value);
-                                }
-                            }
-                            while ((tag = av_dict_iterate(ffmpegparams->fmt->streams[ffmpegparams->astream]->metadata,
-                                                          tag))) {
-                                const char *key = tag2xesam(tag->key);
-                                add_dict_entry(&sub, key, DBUS_TYPE_STRING, &tag->value);
-                            }
-                            dbus_message_iter_close_container(&var, &sub);
-                            dbus_message_iter_close_container(&iter, &var);
-                        } else {
-                            dbus_message_iter_abandon_container(&iter, &var);
-                        }
-                    }
-                } else if (strcmp(property, "Volume") == 0) {
-                    double val = 1.0;
-                    add_variant(&iter, DBUS_TYPE_DOUBLE, &val);
-                } else if (strcmp(property, "Position") == 0) {
-                    add_variant(&iter, DBUS_TYPE_INT64, &position);
-                } else if (strcmp(property, "MinimumRate") == 0) {
-                    double val = 1.0;
-                    add_variant(&iter, DBUS_TYPE_DOUBLE, &val);
-                } else if (strcmp(property, "MaximumRate") == 0) {
-                    double val = 1.0;
-                    add_variant(&iter, DBUS_TYPE_DOUBLE, &val);
-                } else if (strcmp(property, "CanGoNext") == 0) {
-                    dbus_bool_t val = 0;
-                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
-                } else if (strcmp(property, "CanGoPrevious") == 0) {
-                    dbus_bool_t val = 0;
-                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
-                } else if (strcmp(property, "CanPlay") == 0) {
-                    dbus_bool_t val = 0;
-                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
-                } else if (strcmp(property, "CanPause") == 0) {
-                    dbus_bool_t val = 0;
-                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
-                } else if (strcmp(property, "CanSeek") == 0) {
-                    dbus_bool_t val = 0;
-                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
-                } else if (strcmp(property, "CanControl") == 0) {
-                    dbus_bool_t val = 1;
-                    add_variant(&iter, DBUS_TYPE_BOOLEAN, &val);
+                    add_metadata_variant(&iter, ffmpegparams->fmt->metadata);
                 } else {
                     dbus_message_unref(reply);
                     reply = dbus_message_new_error(msg, "org.freedesktop.Properties.Get.Error", "No such property");
@@ -541,11 +563,40 @@ void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpegparams_t *ffmp
         } else {
             reply = dbus_message_new_error(msg, "org.freedesktop.DBus.Properties.Set.Error", "No such interface");
         }
+    } else if (dbus_message_is_method_call(msg, DBUS_INTERFACE_PROPERTIES, "GetAll")) {
+        const char *interface = NULL, *property = NULL;
+        get_relevant_args(msg, &interface, &property);
+        if (strcmp(interface, IFACE_ROOT) == 0) {
+            reply = dbus_message_new_method_return(msg);
+            DBusMessageIter iter;
+            dbus_message_iter_init_append(reply, &iter);
+            ADD_CONTAINER(&iter, DBUS_TYPE_ARRAY, "{sv}", {
+                for (int i = 0; i < sizeof(rootprops) / sizeof(Property); i++) {
+                    Property *p = &rootprops[i];
+                    add_dict_entry(&container, p->name, p->type, p->value);
+                }
+            });
+            ADD_DICT_ENTRY(&iter, "SupportedUriSchemes", { add_protocols_variant(&iter); });
+            ADD_DICT_ENTRY(&iter, "SupportedMimeTypes", { add_mimetypes_variant(&iter); });
+        } else if (strcmp(interface, IFACE_PLAYER) == 0) {
+            reply = dbus_message_new_method_return(msg);
+            DBusMessageIter iter, sub[2];
+            dbus_message_iter_init_append(reply, &iter);
+            dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "{sv}", &sub[0]);
+            for (int i = 0; i < sizeof(playerprops) / sizeof(Property); i++) {
+                Property *p = &playerprops[i];
+                add_dict_entry(&sub[0], p->name, p->type, p->value);
+            }
+            add_metadata_dict_entry(&sub[0], ffmpegparams->fmt->metadata);
+            dbus_message_iter_close_container(&iter, &sub[0]);
+        } else {
+            reply = dbus_message_new_error(msg, "org.freedesktop.DBus.Properties.GetAll.Error", "No such interface");
+        }
     } else if (dbus_message_is_method_call(msg, DBUS_INTERFACE_INTROSPECTABLE, "Introspect")) {
         reply = dbus_message_new_method_return(msg);
         const char *val = XML_DATA;
         dbus_message_append_args(reply, DBUS_TYPE_STRING, &val, DBUS_TYPE_INVALID);
-    } else {
+    } else if (dbus_message_get_type(msg) == DBUS_MESSAGE_TYPE_METHOD_CALL) {
         reply = dbus_message_new_error(msg, "org.mpris.MediaPlayer2.tinyaudio.Error", "Invalid interface or method");
     }
     if (reply) {
@@ -632,11 +683,10 @@ int main(int argc, char **argv) {
                 if (audio == NULL)
                     return 1;
                 openuri(uri, &ffmpegparams);
-                status = PLAYING;
+                set_playing();
 
                 AVFrame *frm = av_frame_alloc();
                 AVPacket *pkt = av_packet_alloc();
-
                 // TODO: log when playback started
                 while (1) {
                     if (!dbus_connection_read_write(dbus_conn, 0)) {
@@ -658,6 +708,11 @@ int main(int argc, char **argv) {
                     }
                     int read_result = av_read_frame(ffmpegparams.fmt, pkt);
                     if (read_result >= 0) {
+                        if (ffmpegparams.fmt->event_flags & AVFMT_EVENT_FLAG_METADATA_UPDATED) {
+                            AVDictionary *metadata = ffmpegparams.fmt->metadata;
+                            notify_properties_changed(dbus_conn, (__add_elements_t)add_metadata_dict_entry, metadata);
+                            ffmpegparams.fmt->event_flags ^= AVFMT_EVENT_FLAG_METADATA_UPDATED;
+                        }
                         if (pkt->stream_index == ffmpegparams.astream) {
                             if (avcodec_send_packet(ffmpegparams.cc, pkt) == 0) {
                                 while (avcodec_receive_frame(ffmpegparams.cc, frm) == 0) {
@@ -675,15 +730,15 @@ int main(int argc, char **argv) {
                                 }
                             }
                         }
+                        av_packet_unref(pkt);
                     } else if (read_result == AVERROR(EOF)) {
                         avcodec_free_context(&ffmpegparams.cc);
                         avformat_close_input(&ffmpegparams.fmt);
-                        status = STOPPED;
+                        set_stopped();
                     } else {
                         fprintf(stderr, "Unexpected stream error!");
-                        status = STOPPED;
+                        set_stopped();
                     }
-                    av_packet_unref(pkt);
                 }
                 // TODO: log an error if one occured, log when playback finished
 
@@ -697,10 +752,3 @@ int main(int argc, char **argv) {
         }
     }
 }
-#else
-int main(int argc, char *argv[]) {
-    const char *xml = generate_xml_data();
-    puts(xml);
-    free((void *)xml);
-}
-#endif
