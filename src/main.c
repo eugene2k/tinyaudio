@@ -23,9 +23,9 @@
  */
 
 #include <assert.h>
+#include <libavutil/dict.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/cdefs.h>
 #include <sys/types.h>
@@ -193,7 +193,7 @@ PropertyValue playerprop_values[] = {{DBUS_TYPE_BOOLEAN, &player_values.can_cont
                                      {DBUS_TYPE_STRING, &player_values.playback_status},
                                      {DBUS_TYPE_DOUBLE, &player_values.rate},
                                      {DBUS_TYPE_BOOLEAN, &player_values.shuffle}};
-#define METADATA_INDEX 9
+#define METADATA_INDEX 8
 char *uri = NULL;
 int64_t position = 0;
 ffmpegparams_t ffmpegparams;
@@ -407,19 +407,40 @@ void add_metadata_dict_entry(DBusMessageIter *iter, AVDictionary *metadata) {
     dbus_message_iter_close_container(iter, &entry);
 }
 
-typedef void (*__add_elements_t)(DBusMessageIter *, void *);
-void notify_properties_changed(DBusConnection *connection, __add_elements_t func, void *userdata) {
+void notify_metadata_changed(DBusConnection *connection, AVDictionary *metadata) {
     DBusMessageIter iter, sub;
     DBusMessage *signal = dbus_message_new_signal(OBJ_PATH, DBUS_INTERFACE_PROPERTIES, "PropertiesChanged");
     dbus_message_iter_init_append(signal, &iter);
     const char *interface = IFACE_PLAYER;
     dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &interface);
 
-    ADD_CONTAINER(&iter, DBUS_TYPE_ARRAY, "{sv}", { func(&container, userdata); });
+    DBusMessageIter array;
+    assert(dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "{sv}", &array));
+    add_metadata_entries(&array, metadata);
+    dbus_message_iter_close_container(&iter, &array);
 
     dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "s", &sub);
     dbus_message_iter_close_container(&iter, &sub);
     dbus_connection_send(connection, signal, NULL);
+    dbus_message_unref(signal);
+}
+
+void notify_playback_status_changed(DBusConnection *connection, const char *new_status) {
+    DBusMessageIter iter, sub;
+    DBusMessage *signal = dbus_message_new_signal(OBJ_PATH, DBUS_INTERFACE_PROPERTIES, "PropertiesChanged");
+    dbus_message_iter_init_append(signal, &iter);
+    const char *interface = IFACE_PLAYER;
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &interface);
+
+    DBusMessageIter array;
+    assert(dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "{sv}", &array));
+    add_dict_entry(&array, "PlaybackStatus", DBUS_TYPE_STRING, &new_status);
+    dbus_message_iter_close_container(&iter, &array);
+
+    dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "s", &sub);
+    dbus_message_iter_close_container(&iter, &sub);
+    dbus_connection_send(connection, signal, NULL);
+    dbus_message_unref(signal);
 }
 
 static inline dbus_bool_t get_relevant_args(DBusMessage *msg, const char **interface, const char **property) {
@@ -444,14 +465,13 @@ static inline dbus_bool_t get_relevant_args(DBusMessage *msg, const char **inter
 static inline DBusMessage *openuri_handler(DBusMessage *msg, ffmpegparams_t *ffmpegparams) {
     DBusMessageIter args;
     if (!dbus_message_iter_init(msg, &args))
-        fprintf(stderr, "Message has no arguments!\n");
-    else if (DBUS_TYPE_STRING != dbus_message_iter_get_arg_type(&args))
-        fprintf(stderr, "Argument is not string!\n");
-    else
-        dbus_message_iter_get_basic(&args, &uri);
+        return dbus_message_new_error(msg, "Message has no arguments!\n", "");
+    if (DBUS_TYPE_STRING != dbus_message_iter_get_arg_type(&args))
+        return dbus_message_new_error(msg, "Argument is not string!\n", "");
+
+    dbus_message_iter_get_basic(&args, &uri);
     openuri(uri, ffmpegparams);
     set_playing();
-
     return dbus_message_new_method_return(msg);
 }
 
@@ -543,7 +563,7 @@ static inline DBusMessage *get_handler(DBusMessage *msg, ffmpegparams_t *ffmpegp
         } else if (strcmp(interface, IFACE_PLAYER) == 0) {
             int index = binsearch(property, playerprop_names, sizeof(playerprop_names) / sizeof(playerprop_names[0]));
             if (index >= 0) {
-                if (index != METADATA_INDEX) {
+                if (index == METADATA_INDEX) {
                     add_metadata_variant(&iter, ffmpegparams->fmt->metadata);
                 } else {
                     if (index > METADATA_INDEX)
@@ -633,10 +653,11 @@ static inline DBusMessage *getall_handler(DBusMessage *msg, ffmpegparams_t *ffmp
             PropertyValue *pv = &playerprop_values[i];
             add_dict_entry(&sub[0], playerprop_names[i], pv->type, pv->value);
         }
-        add_metadata_dict_entry(&sub[0], ffmpegparams->fmt->metadata);
-        for (int i = METADATA_INDEX; i < sizeof(playerprop_names) / sizeof(playerprop_names[0]) - 1; i++) {
+        if (ffmpegparams->fmt)
+            add_metadata_dict_entry(&sub[0], ffmpegparams->fmt->metadata);
+        for (int i = METADATA_INDEX; i < sizeof(playerprop_values) / sizeof(playerprop_values[0]); i++) {
             PropertyValue *pv = &playerprop_values[i];
-            add_dict_entry(&sub[0], playerprop_names[i], pv->type, pv->value);
+            add_dict_entry(&sub[0], playerprop_names[i+1], pv->type, pv->value);
         }
         dbus_message_iter_close_container(&iter, &sub[0]);
     } else {
@@ -696,9 +717,13 @@ static inline void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpeg
 
         if (strcmp(DBUS_INTERFACE_PROPERTIES, iface) == 0)
             reply = properties_handler(msg, member, ffmpegparams);
-        else if (strcmp(IFACE_PLAYER, iface) == 0)
+        else if (strcmp(IFACE_PLAYER, iface) == 0) {
+            enum status_t old_status = status;
             reply = player_handler(msg, member, ffmpegparams);
-        else if (strcmp(IFACE_ROOT, iface) == 0)
+            if (old_status != status) {
+                notify_playback_status_changed(conn, player_values.playback_status);
+            }
+        } else if (strcmp(IFACE_ROOT, iface) == 0)
             reply = root_handler(msg, member);
         else if (strcmp(DBUS_INTERFACE_INTROSPECTABLE, iface) == 0 && strcmp("Introspect", member) == 0) {
             reply = dbus_message_new_method_return(msg);
@@ -725,12 +750,35 @@ static inline dbus_bool_t handle_dbus_error(DBusError *e, const char *msg) {
     }
 }
 
-int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <uri>\n", argv[0]);
-        return 1;
+const char *process_command_line(int argc, char *argv[]) {
+    if (argc > 1) {
+        int cmp = strcmp("play", argv[1]);
+        if (cmp > 0 && strcmp("pause", argv[1]) == 0) {
+            return "Pause";
+        } else if (cmp < 0) {
+            if (strcmp("stop", argv[1]) == 0) {
+                return "Stop";
+            } else if (strcmp("quit", argv[1]) == 0) {
+                return "Quit";
+            };
+        } else {
+            if (argc == 3) {
+                return "OpenUri";
+            }
+            return "Play";
+        }
     }
-    uri = argv[1];
+    printf("USAGE: %s (play [uri] | pause | stop | quit)\nStart playback of an internet audio stream, music file or "
+           "playlist or control the player running in the background.",
+           argv[0]);
+    return NULL;
+}
+
+int main(int argc, char **argv) {
+    const char *method = process_command_line(argc, argv);
+
+    if (!method)
+        return 0;
 
     DBusError err;
     dbus_error_init(&err);
@@ -750,19 +798,30 @@ int main(int argc, char **argv) {
     }
 
     if (has_owner) {
+        const char *iface = IFACE_PLAYER;
+        const char *quit_method = "Quit";
+        if (method == quit_method) {
+            iface = IFACE_ROOT;
+        }
         /* Call OpenUri on the existing owner and exit */
-        DBusMessage *msg = dbus_message_new_method_call(BUS_NAME, OBJ_PATH, IFACE_PLAYER, "OpenUri");
+        DBusMessage *msg = dbus_message_new_method_call(BUS_NAME, OBJ_PATH, iface, method);
         if (!msg) {
             fprintf(stderr, "Failed to create DBus message\n");
             return 1;
         }
-        DBusMessageIter it;
-        dbus_message_iter_init_append(msg, &it);
-        const char *s = uri;
-        if (!dbus_message_iter_append_basic(&it, DBUS_TYPE_STRING, &s)) {
-            fprintf(stderr, "Failed to append argument\n");
-            return 1;
+
+        const char *openuri_method = "OpenUri";
+        if (method == openuri_method) {
+            DBusMessageIter it;
+            dbus_message_iter_init_append(msg, &it);
+            uri = argv[2];
+            const char *s = uri;
+            if (!dbus_message_iter_append_basic(&it, DBUS_TYPE_STRING, &s)) {
+                fprintf(stderr, "Failed to append argument\n");
+                return 1;
+            }
         }
+
         DBusMessage *reply = dbus_connection_send_with_reply_and_block(dbus_conn, msg, -1, &err);
         dbus_message_unref(msg);
         if (!reply) {
@@ -774,6 +833,13 @@ int main(int argc, char **argv) {
         }
         dbus_message_unref(reply);
     } else {
+        const char *openuri_method = "OpenUri";
+        if (method != openuri_method) {
+            printf("Player is not running\n");
+            return 0;
+        }
+        uri = argv[2];
+
         int ret = dbus_bus_request_name(dbus_conn, BUS_NAME, DBUS_NAME_FLAG_DO_NOT_QUEUE, &err);
         if (handle_dbus_error(&err, "RequestName failed")) {
             return 1;
@@ -821,7 +887,7 @@ int main(int argc, char **argv) {
                     if (read_result >= 0) {
                         if (ffmpegparams.fmt->event_flags & AVFMT_EVENT_FLAG_METADATA_UPDATED) {
                             AVDictionary *metadata = ffmpegparams.fmt->metadata;
-                            notify_properties_changed(dbus_conn, (__add_elements_t)add_metadata_dict_entry, metadata);
+                            notify_metadata_changed(dbus_conn, metadata);
                             ffmpegparams.fmt->event_flags ^= AVFMT_EVENT_FLAG_METADATA_UPDATED;
                         }
                         if (pkt->stream_index == ffmpegparams.astream) {
@@ -861,8 +927,7 @@ int main(int argc, char **argv) {
                 }
                 // TODO: log an error if one occured, log when playback finished
                 finishaudio(audio);
-            default:
-                return 0;
         }
     }
+    return 0;
 }

@@ -15,6 +15,7 @@
     "adapter": "CodeLLDB",
     "program": "build/tinyaudio",
     "args": [
+      "play",
       "https://stream.synthwaveradio.eu/listen/synthwaveradio.eu/radio.mp3",
     ],
     "initCommands": ["settings set target.process.follow-fork-mode child"],
