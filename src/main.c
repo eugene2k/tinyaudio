@@ -416,7 +416,7 @@ void notify_metadata_changed(DBusConnection *connection, AVDictionary *metadata)
 
     DBusMessageIter array;
     assert(dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "{sv}", &array));
-    add_metadata_entries(&array, metadata);
+    add_metadata_dict_entry(&array, metadata);
     dbus_message_iter_close_container(&iter, &array);
 
     dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "s", &sub);
@@ -657,7 +657,7 @@ static inline DBusMessage *getall_handler(DBusMessage *msg, ffmpegparams_t *ffmp
             add_metadata_dict_entry(&sub[0], ffmpegparams->fmt->metadata);
         for (int i = METADATA_INDEX; i < sizeof(playerprop_values) / sizeof(playerprop_values[0]); i++) {
             PropertyValue *pv = &playerprop_values[i];
-            add_dict_entry(&sub[0], playerprop_names[i+1], pv->type, pv->value);
+            add_dict_entry(&sub[0], playerprop_names[i + 1], pv->type, pv->value);
         }
         dbus_message_iter_close_container(&iter, &sub[0]);
     } else {
@@ -686,7 +686,8 @@ static inline DBusMessage *root_handler(DBusMessage *msg, const char *member) {
 }
 
 static inline DBusMessage *player_handler(DBusMessage *msg, const char *member, ffmpegparams_t *ffmpegparams) {
-    // NOTE: binary search, but smaller and faster than BINSEARCH
+    // NOTE: binary search -based dispatch. This produces less code than calling binsearch and using switch aferwards,
+    // and is probably faster too.
     int cmp = strcmp("Play", member);
     if (cmp > 0) {
         int cmp = strcmp("OpenUri", member);
@@ -705,7 +706,6 @@ static inline DBusMessage *player_handler(DBusMessage *msg, const char *member, 
     } else {
         return play_handler(msg, ffmpegparams);
     }
-    return NULL;
 }
 
 static inline void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpegparams_t *ffmpegparams) {
