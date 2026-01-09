@@ -30,6 +30,7 @@
 #include <sys/cdefs.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <syslog.h>
 
 #include <dbus/dbus-protocol.h>
 #include <dbus/dbus-shared.h>
@@ -45,6 +46,7 @@
 #include <libavutil/opt.h>
 #include <libavutil/rational.h>
 #include <libavutil/samplefmt.h>
+#include <libavutil/log.h>
 #include <libswresample/swresample.h>
 
 #include <pulse/simple.h>
@@ -52,6 +54,7 @@
 #define SAMPLE_RATE 44100
 #define CHANNELS 2
 
+#define APP_NAME "tinyaudio"
 #define BUS_NAME "org.mpris.MediaPlayer2.tinyaudio"
 #define IFACE_ROOT "org.mpris.MediaPlayer2"
 #define IFACE_PLAYER "org.mpris.MediaPlayer2.Player"
@@ -137,7 +140,7 @@ static struct RootPropertyValues {
 } root_values = {.can_quit = TRUE,
                  .can_raise = FALSE,
                  .has_track_list = FALSE,
-                 .identity = "tinyaudio",
+                 .identity = APP_NAME,
                  .can_set_fullscreen = FALSE,
                  .fullscreen = FALSE};
 
@@ -260,7 +263,7 @@ audio_t *initaudio() {
     ss.rate = 44100;
 
     s = pa_simple_new(NULL,
-                      "tinyaudio", // Our application's name.
+                      APP_NAME, // Our application's name.
                       PA_STREAM_PLAYBACK,
                       NULL,    // Use the default device.
                       "Music", // Description of our stream.
@@ -284,23 +287,23 @@ void finishaudio(audio_t *audio) { pa_simple_free(audio); }
 int openuri(const char *uri, ffmpegparams_t *ffmpegparams) {
     AVFormatContext *fmt = NULL;
     if (avformat_open_input(&fmt, uri, NULL, NULL) < 0) {
-        fprintf(stderr, "Failed to open URI\n");
+        syslog(LOG_ERR, "Failed to open URI\n");
         return 1;
     }
     if (avformat_find_stream_info(fmt, NULL) < 0) {
-        fprintf(stderr, "Failed to read stream info\n");
+        syslog(LOG_ERR, "Failed to read stream info\n");
         return 1;
     }
 
     const AVCodec *codec = NULL;
     int astream = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
     if (astream < 0) {
-        fprintf(stderr, "No audio stream present\n");
+        syslog(LOG_ERR, "No audio stream present\n");
         return 1;
     }
 
     if (!codec) {
-        fprintf(stderr, "No decoder\n");
+        syslog(LOG_ERR, "No decoder\n");
         return 1;
     }
 
@@ -308,7 +311,7 @@ int openuri(const char *uri, ffmpegparams_t *ffmpegparams) {
     avcodec_parameters_to_context(cc, fmt->streams[astream]->codecpar);
     cc->pkt_timebase = fmt->streams[astream]->time_base;
     if (avcodec_open2(cc, codec, NULL) < 0) {
-        fprintf(stderr, "Failed to open decoder\n");
+        syslog(LOG_ERR, "Failed to open decoder\n");
         return 1;
     }
 
@@ -706,6 +709,7 @@ static inline DBusMessage *player_handler(DBusMessage *msg, const char *member, 
     } else {
         return play_handler(msg, ffmpegparams);
     }
+    return NULL;
 }
 
 static inline void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpegparams_t *ffmpegparams) {
@@ -742,7 +746,7 @@ static inline void handle_message(DBusConnection *conn, DBusMessage *msg, ffmpeg
 
 static inline dbus_bool_t handle_dbus_error(DBusError *e, const char *msg) {
     if (dbus_error_is_set(e)) {
-        fprintf(stderr, "%s: %s\n", msg, e->message);
+        syslog(LOG_ERR, "%s: %s\n", msg, e->message);
         dbus_error_free(e);
         return TRUE;
     } else {
@@ -774,11 +778,29 @@ const char *process_command_line(int argc, char *argv[]) {
     return NULL;
 }
 
+void ffmpeg_log_handler(void *avcl, int av_level, const char *fmt, va_list vl) {
+    int level = LOG_DEBUG;
+    switch(av_level) {
+        case AV_LOG_PANIC: level = LOG_CRIT; break;
+        case AV_LOG_FATAL: level = LOG_CRIT; break;
+        case AV_LOG_ERROR: level = LOG_ERR; break;
+        case AV_LOG_WARNING: level = LOG_WARNING; break;
+        case AV_LOG_INFO: level = LOG_NOTICE; break;
+        case AV_LOG_VERBOSE: level = LOG_INFO; break;
+        case AV_LOG_DEBUG: level = LOG_DEBUG; break;
+    }
+    vsyslog(level, fmt, vl);
+}
+
 int main(int argc, char **argv) {
     const char *method = process_command_line(argc, argv);
 
     if (!method)
         return 0;
+
+    openlog(APP_NAME, LOG_CONS, 0);
+    av_log_set_callback(ffmpeg_log_handler);
+
 
     DBusError err;
     dbus_error_init(&err);
@@ -787,7 +809,7 @@ int main(int argc, char **argv) {
     if (!dbus_conn) {
         const char *msg = "Failed to connect to session bus";
         if (!handle_dbus_error(&err, msg)) {
-            fprintf(stderr, "%s\n", msg);
+            syslog(LOG_ERR, "%s\n", msg);
         }
         return 1;
     }
@@ -806,7 +828,7 @@ int main(int argc, char **argv) {
         /* Call OpenUri on the existing owner and exit */
         DBusMessage *msg = dbus_message_new_method_call(BUS_NAME, OBJ_PATH, iface, method);
         if (!msg) {
-            fprintf(stderr, "Failed to create DBus message\n");
+            syslog(LOG_ERR, "Failed to create DBus message\n");
             return 1;
         }
 
@@ -817,7 +839,7 @@ int main(int argc, char **argv) {
             uri = argv[2];
             const char *s = uri;
             if (!dbus_message_iter_append_basic(&it, DBUS_TYPE_STRING, &s)) {
-                fprintf(stderr, "Failed to append argument\n");
+                syslog(LOG_ERR, "Failed to append argument\n");
                 return 1;
             }
         }
@@ -827,7 +849,7 @@ int main(int argc, char **argv) {
         if (!reply) {
             const char *msg = "OpenUri failed";
             if (handle_dbus_error(&err, msg)) {
-                fprintf(stderr, "%s\n", msg);
+                syslog(LOG_ERR, "%s\n", msg);
             }
             return 1;
         }
@@ -845,14 +867,14 @@ int main(int argc, char **argv) {
             return 1;
         }
         if (ret != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
-            fprintf(stderr, "Could not become primary owner\n");
+            syslog(LOG_ERR, "Could not become primary owner\n");
             return 1;
         }
 
         __pid_t pid = fork();
         switch (pid) {
             case -1:;
-                fprintf(stderr, "Failed to fork\n");
+                syslog(LOG_ERR, "Failed to fork\n");
                 return 1;
             case 0:;
                 audio_t *audio = initaudio();
@@ -867,7 +889,7 @@ int main(int argc, char **argv) {
                 // TODO: log when playback started
                 while (1) {
                     if (!dbus_connection_read_write(dbus_conn, 0)) {
-                        fprintf(stderr, "DBus connection closed");
+                        syslog(LOG_ERR, "DBus connection closed");
                         return 1;
                     }
                     DBusMessage *msg;
@@ -916,7 +938,7 @@ int main(int argc, char **argv) {
                         // call set_stopped()
                         set_stopped();
                     } else {
-                        fprintf(stderr, "Unexpected stream error!");
+                        syslog(LOG_WARNING, "Unexpected stream error!");
                         if (error_count > 5) {
                             set_stopped();
                         } else {
