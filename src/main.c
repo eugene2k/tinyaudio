@@ -29,8 +29,8 @@
 #include <string.h>
 #include <sys/cdefs.h>
 #include <sys/types.h>
-#include <unistd.h>
 #include <syslog.h>
+#include <unistd.h>
 
 #include <dbus/dbus-protocol.h>
 #include <dbus/dbus-shared.h>
@@ -42,11 +42,11 @@
 #include <libavformat/avio.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/error.h>
+#include <libavutil/log.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/opt.h>
 #include <libavutil/rational.h>
 #include <libavutil/samplefmt.h>
-#include <libavutil/log.h>
 #include <libswresample/swresample.h>
 
 #include <pulse/simple.h>
@@ -328,6 +328,12 @@ int openuri(const char *uri, ffmpegparams_t *ffmpegparams) {
     ffmpegparams->swr = swr;
 
     return 0;
+}
+
+void ffmpegparams_free(ffmpegparams_t *ffmpegparams) {
+    avcodec_free_context(&ffmpegparams->cc);
+    avformat_close_input(&ffmpegparams->fmt);
+    swr_free(&ffmpegparams->swr);
 }
 
 void add_basic_variant(DBusMessageIter *iter, int type, const void *value) {
@@ -780,14 +786,28 @@ const char *process_command_line(int argc, char *argv[]) {
 
 void ffmpeg_log_handler(void *avcl, int av_level, const char *fmt, va_list vl) {
     int level = LOG_DEBUG;
-    switch(av_level) {
-        case AV_LOG_PANIC: level = LOG_CRIT; break;
-        case AV_LOG_FATAL: level = LOG_CRIT; break;
-        case AV_LOG_ERROR: level = LOG_ERR; break;
-        case AV_LOG_WARNING: level = LOG_WARNING; break;
-        case AV_LOG_INFO: level = LOG_NOTICE; break;
-        case AV_LOG_VERBOSE: level = LOG_INFO; break;
-        case AV_LOG_DEBUG: level = LOG_DEBUG; break;
+    switch (av_level) {
+        case AV_LOG_PANIC:
+            level = LOG_CRIT;
+            break;
+        case AV_LOG_FATAL:
+            level = LOG_CRIT;
+            break;
+        case AV_LOG_ERROR:
+            level = LOG_ERR;
+            break;
+        case AV_LOG_WARNING:
+            level = LOG_WARNING;
+            break;
+        case AV_LOG_INFO:
+            level = LOG_NOTICE;
+            break;
+        case AV_LOG_VERBOSE:
+            level = LOG_INFO;
+            break;
+        case AV_LOG_DEBUG:
+            level = LOG_DEBUG;
+            break;
     }
     vsyslog(level, fmt, vl);
 }
@@ -800,7 +820,6 @@ int main(int argc, char **argv) {
 
     openlog(APP_NAME, LOG_CONS, 0);
     av_log_set_callback(ffmpeg_log_handler);
-
 
     DBusError err;
     dbus_error_init(&err);
@@ -931,20 +950,18 @@ int main(int argc, char **argv) {
                         }
                         av_packet_unref(pkt);
                         error_count = 0;
-                    } else if (read_result == AVERROR(EOF)) {
-                        avcodec_free_context(&ffmpegparams.cc);
-                        avformat_close_input(&ffmpegparams.fmt);
-                        // TODO: if not at the end of playlist, or looping, call openuri with a new uri, otherwise
-                        // call set_stopped()
-                        set_stopped();
                     } else {
-                        syslog(LOG_WARNING, "Unexpected stream error!");
-                        if (error_count > 5) {
-                            set_stopped();
-                        } else {
+                        if (read_result != AVERROR(EOF)) {
+                            syslog(LOG_WARNING, "Unexpected stream error!");
                             error_count++;
-                            continue;
+                            if (error_count < 5) {
+                                continue;
+                            }
+                        } else {
+                            // TODO: if not at the end of playlist, or looping, call openuri with a new uri and continue
                         }
+                        ffmpegparams_free(&ffmpegparams);
+                        set_stopped();
                     }
                 }
                 // TODO: log an error if one occured, log when playback finished
