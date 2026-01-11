@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/cdefs.h>
+#include <sys/syslog.h>
 #include <sys/types.h>
 #include <syslog.h>
 #include <unistd.h>
@@ -372,7 +373,11 @@ static inline void add_metadata_entries(DBusMessageIter *iter, AVDictionary *met
             key = tag2xesam(tag->key);
         };
         if (key) {
-            add_dict_entry(iter, key, DBUS_TYPE_STRING, &tag->value);
+            if (dbus_validate_utf8(tag->value, NULL)) {
+                add_dict_entry(iter, key, DBUS_TYPE_STRING, &tag->value);
+            } else {
+                syslog(LOG_ERR, "Tag %s value is not valid utf8: %s", tag->key, tag->value);
+            }
         }
     }
 }
