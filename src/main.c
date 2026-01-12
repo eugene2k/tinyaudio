@@ -369,6 +369,10 @@ static inline void add_metadata_entries(DBusMessageIter *iter, AVDictionary *met
             key = "xesam:title";
         } else if (strcmp(tag->key, "icy-genre") == 0) {
             key = "xesam:genre";
+        } else if (strcmp(tag->key, "icy-logo") == 0) {
+            key = "mpris:artUrl";
+        } else if (strcmp(tag->key, "icy-stream-url") == 0) {
+            key = "xesam:url";
         } else {
             key = tag2xesam(tag->key);
         };
@@ -552,7 +556,7 @@ static inline DBusMessage *get_handler(DBusMessage *msg, ffmpegparams_t *ffmpegp
         if (strcmp(interface, IFACE_ROOT) == 0) {
             int index = binsearch(property, rootprop_names, sizeof(rootprop_names) / sizeof(rootprop_names[0]));
             if (index >= 0) {
-                int cmp = index < sizeof(rootprop_values) / sizeof(rootprop_values[0]);
+                int cmp = index < (int)sizeof(rootprop_values) / (int)sizeof(rootprop_values[0]);
                 DBusMessageIter dict, variant;
                 dbus_message_iter_open_container(&iter, DBUS_TYPE_DICT_ENTRY, NULL, &dict);
                 dbus_message_iter_append_basic(&dict, DBUS_TYPE_STRING, &rootprop_names[index]);
@@ -636,12 +640,12 @@ static inline DBusMessage *getall_handler(DBusMessage *msg, ffmpegparams_t *ffmp
         DBusMessageIter iter;
         dbus_message_iter_init_append(reply, &iter);
         ADD_CONTAINER(&iter, DBUS_TYPE_ARRAY, "{sv}", ({
-            for (int i = 0; i < sizeof(rootprop_values) / sizeof(rootprop_values[0]); i++) {
+            for (unsigned int i = 0; i < sizeof(rootprop_values) / sizeof(rootprop_values[0]); i++) {
                 PropertyValue *pv = &rootprop_values[i];
                 add_dict_entry(&container, rootprop_names[i], pv->type, pv->value);
             }
 
-            for (int i = SUPPORTED_MIME_TYPES_INDEX; i < sizeof(rootprop_names) / sizeof(rootprop_names[0]); i++) {
+            for (unsigned int i = SUPPORTED_MIME_TYPES_INDEX; i < sizeof(rootprop_names) / sizeof(rootprop_names[0]); i++) {
                 DBusMessageIter dict;
                 dbus_message_iter_open_container(&container, DBUS_TYPE_DICT_ENTRY, NULL, &dict);
                 dbus_message_iter_append_basic(&dict, DBUS_TYPE_STRING, &rootprop_names[i]);
@@ -669,7 +673,7 @@ static inline DBusMessage *getall_handler(DBusMessage *msg, ffmpegparams_t *ffmp
         }
         if (ffmpegparams->fmt)
             add_metadata_dict_entry(&sub[0], ffmpegparams->fmt->metadata);
-        for (int i = METADATA_INDEX; i < sizeof(playerprop_values) / sizeof(playerprop_values[0]); i++) {
+        for (unsigned int i = METADATA_INDEX; i < sizeof(playerprop_values) / sizeof(playerprop_values[0]); i++) {
             PropertyValue *pv = &playerprop_values[i];
             add_dict_entry(&sub[0], playerprop_names[i + 1], pv->type, pv->value);
         }
@@ -790,6 +794,8 @@ const char *process_command_line(int argc, char *argv[]) {
 }
 
 void ffmpeg_log_handler(void *avcl, int av_level, const char *fmt, va_list vl) {
+    (void)avcl; // suppress unused parameter warning
+
     int level = LOG_DEBUG;
     switch (av_level) {
         case AV_LOG_PANIC:

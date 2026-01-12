@@ -1,11 +1,14 @@
-FLAGS = -Os -s
+LIBS:= libavcodec libswresample libavutil libavformat libpulse libpulse-simple dbus-1
+
+CFLAGS += -Wall -Wextra $(shell pkg-config --cflags ${LIBS})
+LDLIBS += $(shell pkg-config --libs ${LIBS})
 
 all:
 	@mkdir -p build
-	cc -Wall ${FLAGS} -o build/tinyaudio src/main.c $(shell pkg-config --libs --cflags libavcodec libswresample libavutil libavformat libpulse libpulse-simple dbus-1)
+	${CC} ${CFLAGS} -o build/tinyaudio src/main.c ${LDLIBS}
 
-debug: FLAGS:=-g
-debug: all
+release: CFLAGS += -Os
+release: all
 
 clean:
 	-rm -r build
