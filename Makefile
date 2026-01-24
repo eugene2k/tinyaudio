@@ -1,6 +1,6 @@
 LIBS:= libavcodec libswresample libavutil libavformat libpulse libpulse-simple dbus-1
 
-CFLAGS += -Wall -Wextra $(shell pkg-config --cflags ${LIBS})
+CFLAGS += -g -Wall -Wextra $(shell pkg-config --cflags ${LIBS})
 LDLIBS += $(shell pkg-config --libs ${LIBS})
 
 all:

@@ -488,8 +488,8 @@ static inline DBusMessage *openuri_handler(DBusMessage *msg, ffmpegparams_t *ffm
         return dbus_message_new_error(msg, "Argument is not string!\n", "");
 
     dbus_message_iter_get_basic(&args, &uri);
-    openuri(uri, ffmpegparams);
-    set_playing();
+    if (!openuri(uri, ffmpegparams))
+        set_playing();
     return dbus_message_new_method_return(msg);
 }
 
@@ -910,7 +910,8 @@ int main(int argc, char **argv) {
                 audio_t *audio = initaudio();
                 if (audio == NULL)
                     return 1;
-                openuri(uri, &ffmpegparams);
+                if (openuri(uri, &ffmpegparams))
+                    return 1;
                 set_playing();
 
                 AVFrame *frm = av_frame_alloc();
